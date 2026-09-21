@@ -1,0 +1,283 @@
+local Players = game:GetService("Players")
+local UIS = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+
+local player = Players.LocalPlayer
+local camera = workspace.CurrentCamera
+
+local enabled, target = false, nil
+local MAX_DISTANCE = 80 -- studs; cambia este número a tu gusto
+local AIM_RAY_LENGTH = 2000 -- alcance para detectar a quién apunta el centro de la cámara
+local LOCK_STRENGTH = 1 -- 1 = camlock duro (la cámara no se mueve); baja el valor (ej. 0.25) para suavizar
+
+-- GUI base
+local gui = Instance.new("ScreenGui")
+gui.ResetOnSpawn = false
+gui.Parent = player:WaitForChild("PlayerGui")
+
+local panel = Instance.new("Frame")
+panel.Size = UDim2.fromOffset(270, 175)
+panel.Position = UDim2.fromScale(0.05, 0.3)
+panel.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+panel.BackgroundTransparency = 0.1
+panel.ClipsDescendants = true
+panel.Parent = gui
+Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 14)
+
+local titleBar = Instance.new("Frame")
+titleBar.Size = UDim2.new(1, 0, 0, 38)
+titleBar.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+titleBar.Parent = panel
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -50, 1, 0)
+title.Position = UDim2.fromOffset(12, 0)
+title.BackgroundTransparency = 1
+title.Text = "Mi Juego | Combat Gui"
+title.TextColor3 = Color3.new(1, 1, 1)
+title.Font = Enum.Font.GothamBold
+title.TextSize = 16
+title.Parent = titleBar
+
+local minimize = Instance.new("TextButton")
+minimize.Size = UDim2.fromOffset(30, 26)
+minimize.Position = UDim2.new(1, -38, 0, 6)
+minimize.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
+minimize.Text = "-"
+minimize.TextColor3 = Color3.new(1, 1, 1)
+minimize.Font = Enum.Font.GothamBold
+minimize.TextSize = 18
+minimize.Parent = titleBar
+Instance.new("UICorner", minimize).CornerRadius = UDim.new(0, 8)
+
+local body = Instance.new("Frame")
+body.Size = UDim2.new(1, 0, 1, -38)
+body.Position = UDim2.fromOffset(0, 38)
+body.BackgroundTransparency = 1
+body.Parent = panel
+
+local rowLabel = Instance.new("TextLabel")
+rowLabel.Size = UDim2.new(1, 0, 0, 24)
+rowLabel.Position = UDim2.fromOffset(0, 8)
+rowLabel.BackgroundTransparency = 1
+rowLabel.Text = "Lock-On"
+rowLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
+rowLabel.Font = Enum.Font.Gotham
+rowLabel.TextSize = 15
+rowLabel.Parent = body
+
+local lockButton = Instance.new("TextButton")
+lockButton.Size = UDim2.new(1, -30, 0, 40)
+lockButton.Position = UDim2.fromOffset(15, 36)
+lockButton.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+lockButton.TextColor3 = Color3.new(1, 1, 1)
+lockButton.Font = Enum.Font.GothamBold
+lockButton.TextSize = 14
+lockButton.Text = "Press to enable Lock-On"
+lockButton.Parent = body
+Instance.new("UICorner", lockButton).CornerRadius = UDim.new(0, 10)
+
+-- Marcador sobre el objetivo
+local marker = Instance.new("BillboardGui")
+marker.Size = UDim2.fromOffset(140, 40)
+marker.StudsOffset = Vector3.new(0, 4, 0)
+marker.AlwaysOnTop = true
+
+local markerLabel = Instance.new("TextLabel")
+markerLabel.Size = UDim2.fromScale(1, 1)
+markerLabel.BackgroundTransparency = 1
+markerLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
+markerLabel.TextScaled = true
+markerLabel.Font = Enum.Font.GothamBold
+markerLabel.Parent = marker
+
+-- Devuelve el HumanoidRootPart solo si el jugador está vivo
+local function getRoot(other)
+	local char = other and other.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	local hrp = char and char:FindFirstChild("HumanoidRootPart")
+	if hum and hum.Health > 0 and hrp then
+		return hrp
+	end
+	return nil
+end
+
+-- Lógica del lock-on
+local function inRange(hrp)
+	local myRoot = getRoot(player)
+	return myRoot ~= nil and (hrp.Position - myRoot.Position).Magnitude <= MAX_DISTANCE
+end
+
+local function getTarget(limitByRange)
+	local best, bestDist = nil, math.huge
+	local center = camera.ViewportSize / 2
+
+	for _, other in ipairs(Players:GetPlayers()) do
+		local hrp = other ~= player and getRoot(other)
+
+		if hrp and (not limitByRange or inRange(hrp)) then
+			local pos, onScreen = camera:WorldToViewportPoint(hrp.Position)
+
+			if onScreen then
+				local dist = (Vector2.new(pos.X, pos.Y) - center).Magnitude
+
+				if dist < bestDist then
+					best, bestDist = other, dist
+				end
+			end
+		end
+	end
+
+	return best
+end
+
+-- Jugador vivo al que apunta el centro de la cámara (con línea de vista)
+local function getAimedPlayer()
+	local center = camera.ViewportSize / 2
+	local ray = camera:ViewportPointToRay(center.X, center.Y)
+
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = player.Character and { player.Character } or {}
+
+	local result = workspace:Raycast(
+		ray.Origin,
+		ray.Direction * AIM_RAY_LENGTH,
+		params
+	)
+
+	if not result then
+		return nil
+	end
+
+	local model = result.Instance:FindFirstAncestorOfClass("Model")
+	local other = model and Players:GetPlayerFromCharacter(model)
+
+	if other and other ~= player and getRoot(other) then
+		return other
+	end
+
+	return nil
+end
+
+local function refresh()
+	lockButton.Text = enabled
+		and "Lock-On: ON (press to disable)"
+		or "Press to enable Lock-On"
+
+	lockButton.BackgroundColor3 = enabled
+		and Color3.fromRGB(40, 120, 70)
+		or Color3.fromRGB(45, 45, 45)
+
+	local hrp = getRoot(target)
+
+	if enabled and hrp then
+		marker.Adornee = hrp
+		markerLabel.Text = "▼ " .. target.DisplayName
+		marker.Parent = gui
+	else
+		marker.Parent = nil
+	end
+end
+
+local function setEnabled(value)
+	enabled = value
+	target = enabled and (getAimedPlayer() or getTarget(false)) or nil
+
+	if enabled and not target then
+		enabled = false
+	end
+
+	refresh()
+end
+
+lockButton.MouseButton1Click:Connect(function()
+	setEnabled(not enabled)
+end)
+
+-- Minimizar
+local minimized = false
+
+minimize.MouseButton1Click:Connect(function()
+	minimized = not minimized
+	body.Visible = not minimized
+	panel.Size = minimized
+		and UDim2.fromOffset(270, 38)
+		or UDim2.fromOffset(270, 130)
+
+	minimize.Text = minimized and "+" or "-"
+end)
+
+-- Arrastrar desde la barra del título
+local dragging, dragStart, startPos = false, nil, nil
+
+titleBar.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1
+		or input.UserInputType == Enum.UserInputType.Touch then
+
+		dragging, dragStart, startPos =
+			true, input.Position, panel.Position
+	end
+end)
+
+UIS.InputChanged:Connect(function(input)
+	if dragging and (
+		input.UserInputType == Enum.UserInputType.MouseMovement
+		or input.UserInputType == Enum.UserInputType.Touch
+	) then
+
+		local d = input.Position - dragStart
+
+		panel.Position = UDim2.new(
+			startPos.X.Scale,
+			startPos.X.Offset + d.X,
+			startPos.Y.Scale,
+			startPos.Y.Offset + d.Y
+		)
+	end
+end)
+
+UIS.InputEnded:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1
+		or input.UserInputType == Enum.UserInputType.Touch then
+
+		dragging = false
+	end
+end)
+
+-- Cámara suave hacia el objetivo
+RunService:BindToRenderStep(
+	"LockOn",
+	Enum.RenderPriority.Camera.Value + 1,
+	function()
+
+		if not enabled then
+			return
+		end
+
+		local hrp = getRoot(target)
+
+		if not hrp then
+			-- El objetivo murió o se fue: buscar otro vivo dentro de MAX_DISTANCE
+			target = getTarget(true)
+
+			if not target then
+				setEnabled(false)
+				return
+			end
+
+			refresh()
+			return
+		end
+
+		local goal = CFrame.lookAt(
+			camera.CFrame.Position,
+			hrp.Position
+		)
+
+		camera.CFrame = camera.CFrame:Lerp(
+			goal,
+			LOCK_STRENGTH
+		)
+	end
+)
